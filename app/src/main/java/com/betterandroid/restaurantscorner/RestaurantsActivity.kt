@@ -1,5 +1,6 @@
 package com.betterandroid.restaurantscorner
 
+import android.location.Location
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -14,7 +15,9 @@ import android.view.ViewGroup
 import androidx.core.content.ContextCompat
 import io.reactivex.schedulers.Schedulers
 import kotlinx.android.synthetic.main.activity_restaurants.*
+import java.nio.channels.CompletionHandler
 import java.util.*
+import kotlin.collections.ArrayList
 
 class RestaurantsActivity : AppCompatActivity() {
 
@@ -34,7 +37,7 @@ class RestaurantsActivity : AppCompatActivity() {
         showRestaurants()
     }
 
-    private fun showRestaurants() {
+    private fun getRestaurants(completionHandler: (response: RestaurantListResponse) -> Unit){
         val client = RestaurantsRestClient()
         val userId = MockCreator.getUserId()
         disposable.add(
@@ -42,89 +45,104 @@ class RestaurantsActivity : AppCompatActivity() {
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe({ response ->
-                    val restaurants = response.restaurants
-                    val parsedRestaurants = arrayListOf<Restaurant>()
+                    completionHandler.invoke(response)
+                }, { }))
+    }
 
-                    if (restaurants != null) {
-                        for (responseRestaurant in restaurants) {
-                            if (responseRestaurant.name != null
-                                && responseRestaurant.imageUrl != null) {
-                                val location = SimpleLocation(
-                                    responseRestaurant.locationLatitude,
-                                    responseRestaurant.locationLongitude
-                                )
-                                parsedRestaurants.add(
-                                    Restaurant(
-                                        id = responseRestaurant.id,
-                                        name = responseRestaurant.name,
-                                        imageUrl = responseRestaurant.imageUrl,
-                                        location = location,
-                                        closingHour = responseRestaurant.closingHour,
-                                        type = responseRestaurant.type
-                                    )
-                                )
-                            }
-                        }
+    private fun showRestaurants() {
+        getRestaurants { response ->
+            //Parsing, filtering, displayin
+            val parsedRestaurants = parseRestaurants(response)
+            val filteredRestaurants = filterRestaurants(parsedRestaurants)
+            prepareRestaurants(filteredRestaurants)
+        }
+
+    }
+
+    private fun prepareRestaurants(filteredRestaurants: ArrayList<Restaurant>) {
+        val displayRestaurants = arrayListOf<RestaurantDisplayItem>()
+        filteredRestaurants.forEach { restaurant ->
+            displayRestaurants.add(
+                RestaurantDisplayItem(
+                    id = restaurant.id,
+                    displayName = "Restaurant ${restaurant.name}",
+                    displayDistance = "at ${restaurant.distance} KM distance",
+                    imageUrl = restaurant.imageUrl,
+                    type = restaurant.type
+                )
+            )
+        }
+
+        val adapter = restaurantsAdapter
+        if (adapter != null) {
+            adapter.restaurants = displayRestaurants
+            adapter.clickListener =
+                object : RestaurantsAdapter.RestaurantClickListener {
+                    override fun onRestaurantClicked(restaurantId: Int) {
+                        Toast.makeText(
+                            this@RestaurantsActivity,
+                            "Pressed a restaurant!",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
+                }
+        }
+    }
 
-                    val filteredRestaurants =  arrayListOf<Restaurant> ()
-                    for (parsedRestaurant in parsedRestaurants) {
-                        if (parsedRestaurant.closingHour < 6)
-                            filteredRestaurants.add(parsedRestaurant)
-                    }
+    private fun filterRestaurants(parsedRestaurants: ArrayList<Restaurant>): ArrayList<Restaurant> {
+        val filteredRestaurants = arrayListOf<Restaurant>()
+        for (parsedRestaurant in parsedRestaurants) {
+            if (parsedRestaurant.closingHour < 6)
+                filteredRestaurants.add(parsedRestaurant)
+        }
 
-                    // val latitude = MockCreator.getUserLatitude()
-                    for (filteredRestaurant in filteredRestaurants) {
-                        val userLat = MockCreator.getUserLatitude()
-                        val userLong = MockCreator.getUserLongitude()
+        // val latitude = MockCreator.getUserLatitude()
+        for (filteredRestaurant in filteredRestaurants) {
+            val userLat = MockCreator.getUserLatitude()
+            val userLong = MockCreator.getUserLongitude()
+            val distance = FloatArray(2)
+            Location.distanceBetween(
+                userLat, userLong,
+                filteredRestaurant.location.latitude,
+                filteredRestaurant.location.longitude,
+                distance
+            )
+            val distanceResult = distance[0]/1000
+            filteredRestaurant.distance = distanceResult.toInt()
+            Log.d("DISTANCE_LOGS", "found distance at $distanceResult")
 
-                        val R = 6371 // Radius of the earth
-                        val latDistance = Math.toRadians(userLat
-                                - filteredRestaurant.location.latitude)
-                        val lonDistance = Math.toRadians(userLong
-                                - filteredRestaurant.location.longitude)
-                        val a = (Math.sin(latDistance / 2)
-                                * Math.sin(latDistance / 2)
-                                + (Math.cos(Math.toRadians(filteredRestaurant.location.latitude))
-                                * Math.cos(Math.toRadians(userLat))
-                                * Math.sin(lonDistance / 2) * Math.sin(lonDistance / 2)))
-                        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-                        val distance = R * c
-                        Log.d("DISTANCE_LOGS", "found distance at $distance")
-                        filteredRestaurant.distance = Math.sqrt(
-                            Math.pow(distance, 2.0) + 0.0).toInt()
-                    }
-                    Collections.sort(filteredRestaurants, RestaurantDistanceSorter())
+        }
+        Collections.sort(filteredRestaurants, RestaurantDistanceSorter())
+        return filteredRestaurants
+    }
 
-                    val displayRestaurants= arrayListOf<RestaurantDisplayItem>()
-                    filteredRestaurants.forEach { restaurant ->
-                        displayRestaurants.add(
-                            RestaurantDisplayItem(
-                                id = restaurant.id ,
-                                displayName = "Restaurant ${restaurant.name}",
-                                displayDistance = "at ${restaurant.distance} KM distance",
-                                imageUrl = restaurant.imageUrl,
-                                type = restaurant.type
-                           )
+    private fun parseRestaurants(response: RestaurantListResponse): ArrayList<Restaurant> {
+        val restaurants = response.restaurants
+        val parsedRestaurants = arrayListOf<Restaurant>()
+
+        if (restaurants != null) {
+            for (responseRestaurant in restaurants) {
+                if (responseRestaurant.name != null
+                    && responseRestaurant.imageUrl != null
+                ) {
+                    val location = SimpleLocation(
+                        responseRestaurant.locationLatitude,
+                        responseRestaurant.locationLongitude
+                    )
+                    parsedRestaurants.add(
+                        Restaurant(
+                            id = responseRestaurant.id,
+                            name = responseRestaurant.name,
+                            imageUrl = responseRestaurant.imageUrl,
+                            location = location,
+                            closingHour = responseRestaurant.closingHour,
+                            type = responseRestaurant.type
                         )
-                    }
-
-                    val adapter = restaurantsAdapter
-                    if(adapter != null) {
-                        adapter.restaurants = displayRestaurants
-                        adapter.clickListener =
-                            object : RestaurantsAdapter.RestaurantClickListener {
-                                override fun onRestaurantClicked(restaurantId: Int) {
-                                    Toast.makeText(
-                                        this@RestaurantsActivity,
-                                        "Pressed a restaurant!",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                            }
-                    }
-                }, {})
-        )
+                    )
+                }
+            }
+        }
+        return parsedRestaurants
     }
 
     override fun onDestroy() {
